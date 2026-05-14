@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDI 猎头工具</title>
+<style>
+/* ── 基础 reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f0f4f8;
+  color: #1a202c;
+  min-height: 100vh;
+}
+
+/* ── 顶部警告条 ── */
+.alert-bar {
+  background: #fffbeb;
+  border-bottom: 2px solid #f59e0b;
+  padding: 9px 24px;
+  font-size: 13px;
+  color: #92400e;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+/* ── 页头 ── */
+.header {
+  background: linear-gradient(135deg, #1e40af, #1a56db);
+  color: white;
+  padding: 18px 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.header-icon { font-size: 28px; }
+.header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+.header p  { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+
+/* ── 步骤指示器 ── */
+.steps {
+  display: flex;
+  gap: 0;
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 28px;
+  overflow-x: auto;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px 14px 0;
+  font-size: 13px;
+  color: #9ca3af;
+  white-space: nowrap;
+  cursor: default;
+}
+.step.active { color: #1a56db; font-weight: 600; }
+.step.done   { color: #059669; }
+.step-num {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.step.active .step-num { background: #1a56db; color: white; }
+.step.done   .step-num { background: #059669; color: white; }
+.step-arrow { color: #d1d5db; padding: 0 0 0 20px; }
+
+/* ── 主内容 ── */
+.main { max-width: 1150px; margin: 24px auto; padding: 0 24px; display: flex; flex-direction: column; gap: 18px; }
+
+/* ── 卡片 ── */
+.card {
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  overflow: hidden;
+}
+.card-head {
+  padding: 15px 20px;
+  border-bottom: 1px solid #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.card-head h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-body { padding: 20px; }
+
+/* ── 姓氏标签 ── */
+.tag-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 12px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 8px;
+  min-height: 58px;
+  background: #fafafa;
+}
+.tag {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 100px;
+  padding: 4px 10px 4px 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #1e40af;
+}
+.tag-del {
+  background: none;
+  border: none;
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px;
+  transition: color .15s;
+}
+.tag-del:hover { color: #ef4444; }
+.add-row { display: flex; gap: 8px; margin-top: 12px; }
+.add-row input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s;
+}
+.add-row input:focus { border-color: #6366f1; }
+.add-row button {
+  padding: 8px 14px;
+  background: #eff6ff;
+  border: 1.5px solid #bfdbfe;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #1e40af;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.add-row button:hover { background: #dbeafe; }
+.add-hint { font-size: 11px; color: #9ca3af; margin-top: 6px; }
+
+/* ── 按钮 ── */
+.btn {
+  padding: 9px 18px;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background .15s, opacity .15s;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: #1a56db; color: white; }
+.btn-primary:hover:not(:disabled) { background: #1446b8; }
+.btn-danger  { background: white; color: #dc2626; border: 1.5px solid #fca5a5; }
+.btn-danger:hover:not(:disabled)  { background: #fef2f2; }
+.btn-success { background: #059669; color: white; }
+.btn-success:hover:not(:disabled) { background: #047857; }
+.btn-outline { background: white; color: #374151; border: 1.5px solid #d1d5db; }
+.btn-outline:hover:not(:disabled) { background: #f9fafb; }
+.btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-linkedin { background: #eff6ff; color: #1a56db; border: 1px solid #bfdbfe; }
+.btn-linkedin:hover { background: #dbeafe; }
+
+/* ── 进度 ── */
+.progress-wrap { background: #e5e7eb; border-radius: 6px; height: 8px; overflow: hidden; margin: 10px 0; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #1a56db, #6366f1); transition: width .4s ease; border-radius: 6px; }
+.progress-label { font-size: 12px; color: #6b7280; }
+.stats-row { display: flex; gap: 28px; margin: 14px 0 4px; }
+.stat-box { text-align: center; }
+.stat-val  { font-size: 26px; font-weight: 700; color: #1a56db; line-height: 1; }
+.stat-lbl  { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+
+/* ── 错误提示 ── */
+.err-box {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  padding: 10px 14px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #b91c1c;
+  max-height: 90px;
+  overflow-y: auto;
+  line-height: 1.6;
+}
+.global-err {
+  background: #fef2f2;
+  border: 1.5px solid #f87171;
+  border-radius: 8px;
+  padding: 14px 18px;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+/* ── 结果表格 ── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  background: #f8fafc;
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  border-bottom: 2px solid #e5e7eb;
+  white-space: nowrap;
+}
+td { padding: 10px 14px; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+tr:hover td { background: #fafafa; }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-active { background: #d1fae5; color: #065f46; }
+.badge-clear  { background: #dbeafe; color: #1e40af; }
+.li-input {
+  width: 230px;
+  padding: 5px 9px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color .15s;
+}
+.li-input:focus { border-color: #6366f1; }
+.li-input.ok    { border-color: #34d399; background: #f0fdf4; }
+.li-input.err   { border-color: #f87171; }
+.name-cell strong { font-weight: 600; }
+.mono { font-family: "SF Mono", "Menlo", monospace; font-size: 12px; }
+
+/* ── 结果汇总行 ── */
+.result-summary { display: flex; align-items: center; gap: 16px; font-size: 13px; }
+.summary-chip {
+  background: #f3f4f6;
+  border-radius: 100px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #374151;
+}
+.summary-chip span { font-weight: 700; color: #1a56db; }
+
+/* ── 工具提示 ── */
+[title] { cursor: help; }
+
+/* ── 隐藏/可见 ── */
+.hidden { display: none !important; }
+
+/* ── 页脚 ── */
+.footer { text-align: center; padding: 28px 0 16px; font-size: 12px; color: #d1d5db; }
+</style>
+</head>
+<body>
+
+<!-- 警告条：防止用户误刷新 -->
+<div class="alert-bar">
+  ⚠️ <strong>请勿刷新此页面</strong> — 所有数据仅保存在内存中，刷新或关闭窗口后数据将<strong>永久清空</strong>，请及时导出CSV。
+</div>
+
+<!-- 页头 -->
+<div class="header">
+  <div class="header-icon">🔍</div>
+  <div>
+    <h1>CDI 猎头工具</h1>
+    <p>加州保险执照持有人查询 · 数据来源：California Department of Insurance 公开系统</p>
+  </div>
+</div>
+
+<!-- 步骤指示器 -->
+<div class="steps">
+  <div class="step active" id="step-1">
+    <div class="step-num">1</div>配置姓氏
+  </div>
+  <div class="step-arrow">›</div>
+  <div class="step" id="step-2">
+    <div class="step-num">2</div>查询CDI
+  </div>
+  <div class="step-arrow">›</div>
+  <div class="step" id="step-3">
+    <div class="step-num">3</div>确认LinkedIn
+  </div>
+  <div class="step-arrow">›</div>
+  <div class="step" id="step-4">
+    <div class="step-num">4</div>导出CSV
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ── 第1步：姓氏配置 ── -->
+  <div class="card" id="card-surnames">
+    <div class="card-head">
+      <h2>📋 第1步：确认查询姓氏</h2>
+      <button class="btn btn-primary" id="btn-start" onclick="startSearch()">开始查询 →</button>
+    </div>
+    <div class="card-body" id="surnames-body">
+      <p style="font-size:13px;color:#6b7280;margin-bottom:12px">
+        以下为预设的30个华人常见姓氏。点击 ✕ 可删除不需要的，也可在下方添加新姓氏。
+      </p>
+      <div class="tag-area" id="tag-area"></div>
+      <div class="add-row">
+        <input id="add-zh"  type="text" placeholder="中文姓氏（如：蔡）" maxlength="4" style="max-width:160px"/>
+        <input id="add-pin" type="text" placeholder="拼音变体，逗号分隔（如：Cai,Tsai）" />
+        <button onclick="addSurname()">+ 添加</button>
+      </div>
+      <p class="add-hint">拼音变体决定CDI实际搜索词，多个用逗号分隔（不分大小写）</p>
+
+      <div style="display:flex;gap:24px;margin-top:20px;padding-top:16px;border-top:1px solid #f3f4f6;flex-wrap:wrap">
+        <!-- 州过滤 -->
+        <div>
+          <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:8px">州过滤</div>
+          <div style="display:flex;gap:8px">
+            <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+              <input type="radio" name="stateFilter" value="CA" checked onchange="saveSettings()"> 仅 California（CA）
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+              <input type="radio" name="stateFilter" value="ALL" onchange="saveSettings()"> 全部州
+            </label>
+          </div>
+        </div>
+
+        <!-- 结果上限 -->
+        <div>
+          <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:8px">
+            结果上限：找到 <strong id="max-label">100</strong> 条 Active 执照后停止
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:12px;color:#9ca3af">50</span>
+            <input type="range" id="max-slider" min="50" max="500" step="10" value="100"
+              style="width:180px;cursor:pointer"
+              oninput="document.getElementById('max-label').textContent=this.value"
+              onchange="saveSettings()">
+            <span style="font-size:12px;color:#9ca3af">500</span>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#6b7280;cursor:pointer">
+              <input type="checkbox" id="no-limit" onchange="toggleNoLimit()"> 不限
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 第2步：查询进度 ── -->
+  <div class="card hidden" id="card-progress">
+    <div class="card-head">
+      <h2>⚡ 第2步：CDI查询进行中</h2>
+      <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopSearch()">停止查询</button>
+    </div>
+    <div class="card-body">
+      <div class="progress-wrap">
+        <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+      <div class="progress-label" id="progress-label">准备启动浏览器...</div>
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-val" id="stat-found">0</div>
+          <div class="stat-lbl">已找到执照</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="stat-done">0</div>
+          <div class="stat-lbl">已完成查询</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="stat-total">—</div>
+          <div class="stat-lbl">总查询数</div>
+        </div>
+      </div>
+      <div class="err-box hidden" id="err-box"></div>
+      <div class="global-err hidden" id="global-err"></div>
+    </div>
+  </div>
+
+  <!-- ── 第3步：结果表格 ── -->
+  <div class="card hidden" id="card-results">
+    <div class="card-head">
+      <h2>🔗 第3步：确认并粘贴 LinkedIn URL</h2>
+      <div class="result-summary">
+        <div class="summary-chip">共 <span id="cnt-total">0</span> 条</div>
+        <div class="summary-chip">已填 <span id="cnt-linked">0</span> 条</div>
+        <button class="btn btn-success" id="btn-export" onclick="exportCSV()">⬇ 导出 CSV</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>姓名</th>
+            <th>执照号</th>
+            <th>执照类型</th>
+            <th>到期日</th>
+            <th>城市</th>
+            <th>状态</th>
+            <th>LinkedIn 搜索</th>
+            <th>LinkedIn URL（粘贴到这里）</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">CDI 猎头工具 · 所有操作在本地进行，数据不上传任何第三方</div>
+
+<script>
+// ── 状态 ────────────────────────────────────────────────────────────────────────
+let surnames = [];
+let renderedIds = new Set();  // 已渲染的记录id，避免重复追加行
+let linkedCount = 0;
+let sseSource = null;
+
+// ── 初始化 ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadSurnames();
+  loadSettings();
+
+  document.getElementById('add-zh').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('add-pin').focus();
+  });
+  document.getElementById('add-pin').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addSurname();
+  });
+
+  // 有数据时拦截刷新/关闭
+  window.addEventListener('beforeunload', e => {
+    if (renderedIds.size > 0) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+});
+
+// ── 姓氏管理 ────────────────────────────────────────────────────────────────────
+async function loadSurnames() {
+  try {
+    const res = await fetch('/api/surnames');
+    surnames = await res.json();
+    renderTags();
+  } catch {
+    alert('❌ 加载姓氏列表失败，请刷新页面重试');
+  }
+}
+
+function renderTags() {
+  const area = document.getElementById('tag-area');
+  area.innerHTML = '';
+  surnames.forEach((s, i) => {
+    const div = document.createElement('div');
+    div.className = 'tag';
+    div.innerHTML =
+      `<span>${s.zh}</span><span style="opacity:.6;font-size:11px">${s.variants.join('/')}</span>` +
+      `<button class="tag-del" onclick="removeSurname(${i})" title="删除此姓氏">✕</button>`;
+    area.appendChild(div);
+  });
+}
+
+function removeSurname(i) {
+  surnames.splice(i, 1);
+  renderTags();
+  saveSurnames();
+}
+
+function addSurname() {
+  const zh  = document.getElementById('add-zh').value.trim();
+  const pin = document.getElementById('add-pin').value.trim();
+  if (!zh)  { alert('请填写中文姓氏'); return; }
+  if (!pin) { alert('请填写至少一个拼音变体（例如：Cai）'); return; }
+
+  const variants = pin.split(',').map(v => v.trim()).filter(Boolean)
+                      .map(v => v.charAt(0).toUpperCase() + v.slice(1).toLowerCase());
+  surnames.push({ zh, variants });
+  renderTags();
+  saveSurnames();
+  document.getElementById('add-zh').value  = '';
+  document.getElementById('add-pin').value = '';
+  document.getElementById('add-zh').focus();
+}
+
+async function saveSurnames() {
+  await fetch('/api/surnames', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ surnames }),
+  });
+}
+
+// ── 设置 ───────────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    const s = await res.json();
+    document.querySelector(`input[name="stateFilter"][value="${s.state_filter}"]`).checked = true;
+    if (s.max_results === 0) {
+      document.getElementById('no-limit').checked = true;
+      document.getElementById('max-slider').disabled = true;
+      document.getElementById('max-label').textContent = '不限';
+    } else {
+      document.getElementById('max-slider').value = s.max_results;
+      document.getElementById('max-label').textContent = s.max_results;
+    }
+  } catch {}
+}
+
+async function saveSettings() {
+  const stateFilter = document.querySelector('input[name="stateFilter"]:checked')?.value || 'CA';
+  const noLimit = document.getElementById('no-limit').checked;
+  const maxResults = noLimit ? 0 : parseInt(document.getElementById('max-slider').value);
+  await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state_filter: stateFilter, max_results: maxResults }),
+  });
+}
+
+function toggleNoLimit() {
+  const noLimit = document.getElementById('no-limit').checked;
+  const slider = document.getElementById('max-slider');
+  slider.disabled = noLimit;
+  document.getElementById('max-label').textContent = noLimit ? '不限' : slider.value;
+  saveSettings();
+}
+
+// ── 查询控制 ────────────────────────────────────────────────────────────────────
+async function startSearch() {
+  // 重置上一次结果的UI状态
+  renderedIds.clear();
+  linkedCount = 0;
+  document.getElementById('tbody').innerHTML = '';
+  document.getElementById('cnt-total').textContent  = '0';
+  document.getElementById('cnt-linked').textContent = '0';
+  document.getElementById('card-results').classList.add('hidden');
+  document.getElementById('err-box').classList.add('hidden');
+  document.getElementById('global-err').classList.add('hidden');
+
+  const btn = document.getElementById('btn-start');
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/search/start', { method: 'POST' });
+    if (!res.ok) {
+      const d = await res.json();
+      alert('❌ ' + (d.detail || '启动查询失败'));
+      btn.disabled = false;
+      return;
+    }
+  } catch {
+    alert('❌ 无法连接到工具后端，请重启工具');
+    btn.disabled = false;
+    return;
+  }
+
+  // 切换UI到查询状态
+  document.getElementById('card-progress').classList.remove('hidden');
+  document.getElementById('surnames-body').style.display = 'none';
+  setStep(2);
+
+  startSSE();
+}
+
+async function stopSearch() {
+  await fetch('/api/search/stop', { method: 'POST' });
+  if (sseSource) { sseSource.close(); sseSource = null; }
+  document.getElementById('btn-stop').disabled = true;
+  document.getElementById('progress-label').textContent = '已停止';
+}
+
+// ── SSE进度监听 ─────────────────────────────────────────────────────────────────
+function startSSE() {
+  if (sseSource) sseSource.close();
+  sseSource = new EventSource('/api/search/progress');
+
+  sseSource.onmessage = async (e) => {
+    const data = JSON.parse(e.data);
+    updateProgressUI(data);
+
+    // 有新结果时刷新表格
+    if (data.result_count > renderedIds.size) {
+      await refreshResults();
+    }
+
+    if (data.status === 'done' || data.status === 'error') {
+      sseSource.close();
+      sseSource = null;
+      onSearchEnd(data);
+    }
+  };
+
+  sseSource.onerror = () => {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+  };
+}
+
+function updateProgressUI(data) {
+  const { progress, result_count, errors, status } = data;
+  const pct = progress.total ? Math.round(progress.done / progress.total * 100) : 0;
+
+  document.getElementById('progress-fill').style.width = pct + '%';
+
+  const labels = {
+    waiting_captcha: '⏳ 请在弹出的浏览器窗口中完成人机验证，完成后将自动继续...',
+    running: `正在查询：${progress.current || '...'} （${progress.done} / ${progress.total}）`,
+    done:    `✅ 查询完成，共找到 ${result_count} 条有效执照`,
+    error:   '❌ 查询中断',
+    idle:    '已停止',
+  };
+  document.getElementById('progress-label').textContent = labels[status] || '处理中...';
+
+  // 等待验证码时更新卡片标题
+  const cardTitle = document.querySelector('#card-progress h2');
+  if (status === 'waiting_captcha') {
+    cardTitle.innerHTML = '⏳ 第2步：请完成人机验证';
+  } else if (status === 'running') {
+    cardTitle.innerHTML = '⚡ 第2步：CDI查询进行中';
+  }
+
+  document.getElementById('stat-found').textContent = result_count;
+  document.getElementById('stat-done').textContent  = progress.done;
+  document.getElementById('stat-total').textContent = progress.total || '—';
+
+  if (errors && errors.length > 0) {
+    const box = document.getElementById('err-box');
+    box.classList.remove('hidden');
+    box.innerHTML = '<strong>部分姓氏查询出错（已跳过，不影响整体）：</strong><br>' +
+      errors.map(escHtml).join('<br>');
+  }
+
+  if (data.error_message) {
+    const el = document.getElementById('global-err');
+    el.classList.remove('hidden');
+    el.textContent = data.error_message;
+  }
+}
+
+async function onSearchEnd(data) {
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  setStepDone(2);
+  await refreshResults();
+  if (renderedIds.size > 0) setStep(3);
+}
+
+// ── 结果表格 ────────────────────────────────────────────────────────────────────
+async function refreshResults() {
+  let results;
+  try {
+    const res = await fetch('/api/results');
+    results = await res.json();
+  } catch { return; }
+
+  if (!results.length) return;
+
+  document.getElementById('card-results').classList.remove('hidden');
+  document.getElementById('cnt-total').textContent = results.length;
+  setStep(3);
+
+  const tbody = document.getElementById('tbody');
+
+  results.forEach(r => {
+    if (renderedIds.has(r.id)) return;
+    renderedIds.add(r.id);
+
+    const tr = document.createElement('tr');
+    tr.id = 'row-' + r.id;
+
+    const statusBadge = r.status.toUpperCase() === 'ACTIVE'
+      ? `<span class="badge badge-active">Active</span>`
+      : `<span class="badge badge-clear">Clear</span>`;
+
+    const liUrl = escAttr(r.linkedin_url || '');
+    const liClass = r.linkedin_url ? 'li-input ok' : 'li-input';
+
+    tr.innerHTML = `
+      <td class="name-cell"><strong>${escHtml(r.last_name)}</strong>, ${escHtml(r.first_name)}</td>
+      <td class="mono">${escHtml(r.license_number)}</td>
+      <td>${escHtml(r.license_type)}</td>
+      <td>${escHtml(r.expiration_date)}</td>
+      <td>${escHtml(r.city)}</td>
+      <td>${statusBadge}</td>
+      <td>
+        <button class="btn btn-linkedin btn-sm"
+          onclick="openLinkedIn(${JSON.stringify(r.first_name)}, ${JSON.stringify(r.last_name)})">
+          🔍 搜索
+        </button>
+      </td>
+      <td>
+        <input
+          type="url"
+          class="${liClass}"
+          id="li-${r.id}"
+          placeholder="粘贴 LinkedIn URL..."
+          value="${liUrl}"
+          onchange="saveLinkedIn('${r.id}', this)"
+          onblur="saveLinkedIn('${r.id}', this)"
+        />
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function openLinkedIn(firstName, lastName) {
+  const q = encodeURIComponent(firstName) + '+' + encodeURIComponent(lastName) + '+insurance+California';
+  window.open('https://www.linkedin.com/search/results/people/?keywords=' + q, '_blank');
+}
+
+async function saveLinkedIn(id, el) {
+  const url = el.value.trim();
+
+  // 只接受LinkedIn域名，或空字符串（清除）
+  if (url && !url.includes('linkedin.com')) {
+    el.classList.add('err');
+    el.classList.remove('ok');
+    el.title = '请粘贴包含 linkedin.com 的有效链接';
+    return;
+  }
+
+  el.classList.remove('err');
+  el.classList.toggle('ok', !!url);
+  el.title = '';
+
+  // 更新已填计数
+  updateLinkedCount();
+
+  try {
+    await fetch(`/api/results/${id}/linkedin`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ linkedin_url: url }),
+    });
+  } catch {
+    // 网络失败时静默，用户下次操作会重试
+  }
+}
+
+function updateLinkedCount() {
+  const filled = document.querySelectorAll('.li-input.ok').length;
+  document.getElementById('cnt-linked').textContent = filled;
+  if (filled > 0) setStep(4);
+}
+
+// ── CSV导出 ────────────────────────────────────────────────────────────────────
+function exportCSV() {
+  window.location.href = '/api/export';
+  setStepDone(4);
+}
+
+// ── 步骤指示器 ──────────────────────────────────────────────────────────────────
+function setStep(n) {
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById('step-' + i);
+    el.classList.remove('active', 'done');
+    if (i < n) el.classList.add('done');
+    if (i === n) el.classList.add('active');
+    const num = el.querySelector('.step-num');
+    num.textContent = i < n ? '✓' : String(i);
+  }
+}
+
+function setStepDone(n) {
+  const el = document.getElementById('step-' + n);
+  el.classList.remove('active');
+  el.classList.add('done');
+  el.querySelector('.step-num').textContent = '✓';
+}
+
+// ── 工具函数 ──────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function escAttr(s) { return escHtml(s); }
+</script>
+</body>
+</html>
