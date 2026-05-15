@@ -1,14 +1,18 @@
 """
-CDI执照查询爬虫 v2
-目标：https://cdicloud.insurance.ca.gov/cal/IndividualNameSearch
-使用 undetected-chromedriver 绕过 Cloudflare Turnstile 检测
-首次运行浏览器可见，如需人工验证用户手动完成一次即可
+CDI执照查询爬虫 v4
+- 超500条大姓自动 A-Z 分段，必要时继续展开 AA/AB...
+- 每批列表结果收集完后，逐条用 form1 POST 进详情页提取
+  business_address / business_phone / license_type / expiration_date
 """
 
+import json
+import re
+import string
 import time
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -18,9 +22,51 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 
 CDI_SEARCH_URL = "https://cdicloud.insurance.ca.gov/cal/IndividualNameSearch"
+CDI_DETAIL_URL = "https://cdicloud.insurance.ca.gov/cal/LicenseDetail"
 
-# 已知会触发 CDI 500条上限的拼音（测试确认过，直接跳过节省时间）
-KNOWN_OVER_LIMIT = {"Li", "Lee", "Wang", "Chen", "Chan", "Zhang", "Chang"}
+_OVER_LIMIT_FILE = Path(__file__).parent / "over_limit.json"
+
+
+def load_over_limit() -> set:
+    try:
+        data = json.loads(_OVER_LIMIT_FILE.read_text(encoding="utf-8"))
+        return set(data.get("over_limit", []))
+    except Exception:
+        return set()
+
+
+def save_over_limit(s: set) -> None:
+    try:
+        _OVER_LIMIT_FILE.write_text(
+            json.dumps({"over_limit": sorted(s)}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+class OverLimitError(Exception):
+    pass
+
+
+# 加州华人最常见英文名（女性 + 男性）
+FIRST_NAME_LIST = [
+    # 女性
+    "Alice", "Amy", "Angela", "Annie", "Betty", "Carol", "Cathy",
+    "Christine", "Cindy", "Diana", "Emily", "Grace", "Helen", "Janet",
+    "Jennifer", "Jenny", "Jessica", "Julie", "Karen", "Kelly", "Laura",
+    "Linda", "Lisa", "Mary", "Michelle", "Nancy", "Rebecca", "Rose",
+    "Sarah", "Susan", "Tina", "Vivian", "Wendy", "Yvonne",
+    # 男性
+    "Aaron", "Alan", "Albert", "Allen", "Andy", "Anthony", "Brian",
+    "Charles", "Chris", "Daniel", "David", "Dennis", "Derek", "Eric",
+    "Frank", "Gary", "George", "Henry", "Jack", "James", "Jason",
+    "Jeff", "Jimmy", "John", "Kevin", "Larry", "Mark", "Michael",
+    "Patrick", "Paul", "Peter", "Raymond", "Richard", "Robert",
+    "Roger", "Ryan", "Sam", "Simon", "Stephen", "Thomas", "Tony",
+    "Victor", "William", "Wilson",
+]
+
 
 # 30个华人常见姓氏及拼音变体
 SURNAME_LIST = [
@@ -63,14 +109,22 @@ class Licensee:
     first_name: str
     last_name: str
     license_number: str
-    license_type: str       # 列表页不提供，留空
-    expiration_date: str    # 列表页不提供，留空
+    license_type: str
+    expiration_date: str
     status: str
     city: str
     state: str = ""
+    business_address: str = ""
+    business_phone: str = ""
     linkedin_url: str = ""
     contact_status: str = ""
     notes: str = ""
+    # internal scraping fields — stripped before storing in AppStore
+    _onclick_params: list = field(default_factory=list, repr=False)
+
+
+def _make_query(zh: str, pinyin: str, prefix: str = "") -> dict:
+    return {"zh": zh, "pinyin": pinyin, "prefix": prefix}
 
 
 class CDIScraper:
@@ -78,14 +132,16 @@ class CDIScraper:
         self.driver = None
         self._first_search = True
         self._state_filter = "CA"
-        self._max_results = 100
+        self._max_results = 10
+        self._over_limit: set = load_over_limit()
+        self._fn_field_id: str = None   # discovered at runtime
+
+    # ── Driver ────────────────────────────────────────────────────
 
     def _init_driver(self):
-        """可见 Chrome，undetected-chromedriver 绕过 Cloudflare 检测"""
         opts = uc.ChromeOptions()
-        opts.add_argument("--window-size=1280,900")
         opts.add_argument("--no-sandbox")
-        # headless=False：浏览器可见，用户能手动完成人机验证
+        opts.add_argument("--window-size=900,620")
         self.driver = uc.Chrome(options=opts, headless=False)
 
     def _quit_driver(self):
@@ -97,43 +153,44 @@ class CDIScraper:
             self.driver = None
 
     def _wait_for_turnstile(self):
-        """
-        等待 Cloudflare Turnstile 完成。
-        大多数情况下自动通过；如出现可见验证框，用户手动点击即可。
-        最多等待 120 秒。
-        """
         try:
             WebDriverWait(self.driver, 120).until(
-                lambda d: bool(
-                    d.execute_script(
-                        "return document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''"
-                    )
-                )
+                lambda d: bool(d.execute_script(
+                    "return document.querySelector"
+                    "('input[name=\"cf-turnstile-response\"]')?.value || ''"
+                ))
             )
         except TimeoutException:
-            pass  # 超时后仍继续尝试提交
+            pass
+
+    # ── Query list ────────────────────────────────────────────────
+
+    def _build_query_list(self, surname_config: list) -> list:
+        queries = []
+        for s in surname_config:
+            for v in s["variants"]:
+                queries.append(_make_query(s["zh"], v, ""))
+        return queries
+
+    # ── Main loop ─────────────────────────────────────────────────
 
     def run(self, surname_config: list, store, stop_event: threading.Event,
-            state_filter: str = "CA", max_results: int = 100):
-        all_queries = [
-            {"zh": s["zh"], "pinyin": v}
-            for s in surname_config
-            for v in s["variants"]
-        ]
-        total = len(all_queries)
-        store.progress = {"current": "正在启动浏览器...", "done": 0, "total": total}
-        seen_license_numbers = set()
+            state_filter: str = "CA", max_results: int = 10):
+
         self._state_filter = state_filter.upper()
         self._max_results = max_results
+        all_queries = self._build_query_list(surname_config)
+        seen_numbers: set = set()
+
+        store.progress = {"current": "正在启动浏览器...", "done": 0, "total": len(all_queries)}
 
         try:
             self._init_driver()
         except Exception as e:
             store.status = "error"
-            store.error_message = f"浏览器启动失败，请重试。\n详情：{e}"
+            store.error_message = f"浏览器启动失败：{e}"
             return
 
-        # 打开 CDI，等待 Cloudflare 验证
         try:
             self.driver.get(CDI_SEARCH_URL)
             store.status = "waiting_captcha"
@@ -142,7 +199,7 @@ class CDIScraper:
             store.status = "running"
         except Exception as e:
             store.status = "error"
-            store.error_message = f"加载 CDI 网站失败：{e}"
+            store.error_message = f"加载CDI失败：{e}"
             self._quit_driver()
             return
 
@@ -150,61 +207,122 @@ class CDIScraper:
             for i, q in enumerate(all_queries):
                 if stop_event.is_set():
                     break
-
-                store.progress = {
-                    "current": f"{q['zh']}（{q['pinyin']}）",
-                    "done": i,
-                    "total": total,
-                }
-
-                # 已知超限的拼音直接跳过，不浪费请求
-                if q["pinyin"] in KNOWN_OVER_LIMIT:
-                    store.errors.append(
-                        f'跳过 {q["zh"]}（{q["pinyin"]}）：已知结果超过CDI 500条上限，'
-                        f'请前往 CDI 网站手动添加名字筛选'
-                    )
-                else:
-                    try:
-                        for r in self._search_one(q["pinyin"]):
-                            if r.license_number not in seen_license_numbers:
-                                seen_license_numbers.add(r.license_number)
-                                store.results.append(r.__dict__.copy())
-                    except Exception as e:
-                        store.errors.append(f'查询"{q["pinyin"]}"失败：{e}')
-
-                # 达到总数上限时停止
                 if self._max_results > 0 and len(store.results) >= self._max_results:
-                    store.errors.append(f'已达到设定上限 {self._max_results} 条，提前停止')
+                    store.errors.append(f'已达到设定上限 {self._max_results} 条，停止')
                     break
 
-                # 对 CDI 网站友好：每次间隔 ≥2.5 秒
-                if i < total - 1 and not stop_event.is_set():
-                    time.sleep(2.5)
+                store.progress["done"] = i
+                label = f"{q['zh']}（{q['pinyin']}）"
+                store.progress["current"] = label
 
-            store.progress["done"] = total
+                try:
+                    batch = self._search_one(q["pinyin"], "")
+                    self._collect_batch(batch, store, seen_numbers, label, stop_event)
+
+                except OverLimitError:
+                    # 超500条 → 逐字母 A-Z 搜索，收够为止
+                    store.errors.append(f'🔀 "{q["pinyin"]}" 超500条，展开 A-Z 子查询')
+                    for letter in string.ascii_uppercase:
+                        if stop_event.is_set():
+                            break
+                        if self._max_results > 0 and len(store.results) >= self._max_results:
+                            break
+                        sub_label = f"{q['zh']}（{q['pinyin']} {letter}*）"
+                        store.progress["current"] = sub_label
+                        try:
+                            sub_batch = self._search_one(q["pinyin"], letter)
+                            self._collect_batch(sub_batch, store, seen_numbers, sub_label, stop_event)
+                        except OverLimitError:
+                            store.errors.append(f'⚠️ "{q["pinyin"]} {letter}*" 仍超500条，跳过')
+                        except Exception as e:
+                            store.errors.append(f'查询"{sub_label}"失败：{e}')
+                        if not stop_event.is_set():
+                            time.sleep(1.0)
+
+                except Exception as e:
+                    store.errors.append(f'查询"{label}"失败：{e}')
+
+                if not stop_event.is_set():
+                    time.sleep(1.0)
+
+            store.progress["done"] = len(all_queries)
             store.status = "done"
 
         except Exception as e:
             store.status = "error"
-            store.error_message = f"查询中断，请重启工具后重试。\n详情：{e}"
+            store.error_message = f"查询中断：{e}"
         finally:
             self._quit_driver()
 
-    def _search_one(self, last_name: str) -> list:
-        self._submit_search(last_name)
+    # ── Search ────────────────────────────────────────────────────
 
-        # CDI 硬限制：超过 500 条时不返回任何数据
-        # 这是 CDI 本身的设计，手工搜也一样，直接跳过并记录提示
+    def _collect_batch(self, batch, store, seen_numbers, label, stop_event):
+        """Process a list of Licensee records into store.results."""
+        for j, r in enumerate(batch):
+            if stop_event.is_set():
+                break
+            if self._max_results > 0 and len(store.results) >= self._max_results:
+                break
+            if r.license_number in seen_numbers:
+                continue
+            seen_numbers.add(r.license_number)
+            if r._onclick_params:
+                store.progress["current"] = f"{label} 详情 {j + 1}/{len(batch)}"
+                self._fetch_detail_into(r)
+                time.sleep(1.0)
+            d = r.__dict__.copy()
+            d.pop("_onclick_params", None)
+            store.results.append(d)
+
+    def _search_one(self, last_name: str, prefix: str = "") -> list:
+        self._submit_search(last_name, prefix)
         if self._is_over_limit():
-            raise Exception(
-                f"结果超过500条（CDI限制），已跳过。"
-                f"如需查询，请前往 CDI 网站手动添加名字筛选。"
-            )
-
+            raise OverLimitError(f"{last_name} {prefix}*".strip())
         return self._collect_all_pages()
 
-    def _submit_search(self, last_name: str) -> None:
-        """填表并提交"""
+    def _find_first_name_field(self):
+        """Locate the First Name input on the CDI search page, cache the result."""
+        if self._fn_field_id:
+            try:
+                return self.driver.find_element(By.ID, self._fn_field_id)
+            except Exception:
+                self._fn_field_id = None
+
+        # 1) try known IDs
+        for fid in ("SearchFirstName", "FirstName", "txtFirstName", "first_name", "fname"):
+            try:
+                el = self.driver.find_element(By.ID, fid)
+                self._fn_field_id = fid
+                return el
+            except NoSuchElementException:
+                continue
+
+        # 2) try finding via label text
+        try:
+            label = self.driver.find_element(
+                By.XPATH, "//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'first')]"
+            )
+            for_id = label.get_attribute("for")
+            if for_id:
+                el = self.driver.find_element(By.ID, for_id)
+                self._fn_field_id = for_id
+                return el
+        except Exception:
+            pass
+
+        # 3) fallback: second text input on page (first is Last Name)
+        try:
+            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='text']")
+            for inp in inputs:
+                if inp.get_attribute("id") != "SearchLastName":
+                    self._fn_field_id = inp.get_attribute("id") or "__positional__"
+                    return inp
+        except Exception:
+            pass
+
+        return None
+
+    def _submit_search(self, last_name: str, prefix: str = "") -> None:
         driver = self.driver
         wait = WebDriverWait(driver, 15)
 
@@ -213,20 +331,35 @@ class CDIScraper:
         else:
             try:
                 driver.find_element(By.ID, "btnClearSearch").click()
-                time.sleep(0.8)
+                wait.until(lambda d: d.find_element(By.ID, "SearchLastName").get_attribute("value") == "")
             except Exception:
                 driver.get(CDI_SEARCH_URL)
-                time.sleep(2)
                 self._wait_for_turnstile()
 
         last_input = wait.until(EC.presence_of_element_located((By.ID, "SearchLastName")))
         last_input.clear()
         last_input.send_keys(last_name)
+
+        # 每次都清 First Name 字段，避免上次的字母前缀残留
+        fn_el = self._find_first_name_field()
+        if fn_el:
+            fn_el.clear()
+            if prefix:
+                fn_el.send_keys(prefix)
+
         driver.find_element(By.ID, "btnSearch").click()
-        time.sleep(3)
+        # 等结果表格或"无结果"提示出现，而不是固定等 3 秒
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".alert, .no-results, #noResults")),
+                )
+            )
+        except TimeoutException:
+            time.sleep(2)
 
     def _is_over_limit(self) -> bool:
-        """检测 CDI 是否返回了超过500条的提示"""
         try:
             body = self.driver.find_element(By.TAG_NAME, "body").text
             return "500" in body and "refine" in body.lower()
@@ -234,14 +367,10 @@ class CDIScraper:
             return False
 
     def _collect_all_pages(self) -> list:
-        """遍历所有分页，收集全部结果"""
         results = []
         page = 1
-
         while True:
             results.extend(self._parse_current_page())
-
-            # 检查是否还有下一页（DataTables 分页）
             try:
                 next_li = self.driver.find_element(
                     By.CSS_SELECTOR, "li.paginate_button.next, li.next"
@@ -251,25 +380,20 @@ class CDIScraper:
                 next_li.find_element(By.TAG_NAME, "a").click()
                 time.sleep(2)
                 page += 1
-            except (NoSuchElementException, Exception):
+            except Exception:
                 break
-
-            if page > 100:   # 安全上限
+            if page > 100:
                 break
-
         return results
 
     def _parse_current_page(self) -> list:
         """
-        解析当前页结果表格
-        列顺序：Last Name | Middle Name | First Name | License Number | Status | City | State | Resident Status
+        Columns: Last Name | Middle | First | License# | Status | City | State | Resident
+        Also extracts onclick params for detail fetching.
         """
-        driver = self.driver
         results = []
-
         try:
-            wait = WebDriverWait(driver, 10)
-            table = wait.until(
+            table = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody"))
             )
             rows = table.find_elements(By.TAG_NAME, "tr")
@@ -294,11 +418,19 @@ class CDIScraper:
                 continue
             if not last_name or not license_number:
                 continue
-            # 州过滤：ALL 表示不限，否则只保留指定州
             if self._state_filter != "ALL" and state.upper() != self._state_filter:
                 continue
 
-            results.append(Licensee(
+            # Extract onclick params from license number link
+            onclick_params = []
+            try:
+                link = cells[3].find_element(By.TAG_NAME, "a")
+                onclick = link.get_attribute("onclick") or ""
+                onclick_params = re.findall(r"'([^']+)'", onclick)
+            except Exception:
+                pass
+
+            licensee = Licensee(
                 id=str(uuid.uuid4()),
                 first_name=first_name,
                 last_name=last_name,
@@ -308,6 +440,119 @@ class CDIScraper:
                 status=status,
                 city=city,
                 state=state,
-            ))
+                _onclick_params=onclick_params,
+            )
+            results.append(licensee)
 
         return results
+
+    # ── Detail page ───────────────────────────────────────────────
+
+    def _fetch_detail_into(self, licensee: Licensee) -> None:
+        """
+        Submit form1 (target=_self) with license params, extract detail data.
+        Tries onclick_params[2] as SearchIndvId first, then [1] as fallback.
+        After extraction, navigates back to CDI_SEARCH_URL so form1 is available next time.
+        """
+        params = licensee._onclick_params
+        if not params or len(params) < 3:
+            return
+
+        lic_nbr     = params[0]
+        search_type = params[3] if len(params) > 3 else "IND"
+
+        for indv_id in [params[2], params[1]]:
+            try:
+                success = self._post_detail_form(lic_nbr, indv_id, search_type)
+                if not success:
+                    continue
+
+                body = self.driver.find_element(By.TAG_NAME, "body").text
+
+                if "Unable to retrieve" in body or not body.strip():
+                    continue
+
+                # Extract address and phone
+                addr  = re.search(r'Business Address:\s*(.+)', body)
+                phone = re.search(r'Business Phone:\s*(.+)', body)
+                if addr:
+                    licensee.business_address = addr.group(1).strip()
+                if phone:
+                    licensee.business_phone = phone.group(1).strip()
+
+                # Extract license types and expiration from table
+                self._extract_license_table(licensee)
+
+                break  # success — stop trying alternate IndvId
+
+            except Exception:
+                continue
+
+        # Return browser to search page so next detail fetch can use form1
+        try:
+            self.driver.get(CDI_SEARCH_URL)
+            self._wait_for_turnstile()
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "SearchLastName"))
+            )
+            self._first_search = True
+        except Exception:
+            pass
+
+    def _post_detail_form(self, lic_nbr: str, indv_id: str, search_type: str) -> bool:
+        """Submit form1 in same tab. Returns True if page changed to LicenseDetail."""
+        try:
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "form1"))
+            )
+            self.driver.execute_script("""
+                var f = document.getElementById('form1');
+                f.target = '_self';
+                document.getElementById('SearchLicNbr').value = arguments[0];
+                document.getElementById('SearchIndvId').value = arguments[1];
+                document.getElementById('SearchType').value   = arguments[2];
+                f.submit();
+            """, lic_nbr, indv_id, search_type)
+            # 等详情页关键元素出现，而不是固定等 2.5 秒
+            WebDriverWait(self.driver, 10).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")),
+                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'Business Address')]")),
+                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'Unable to retrieve')]")),
+                )
+            )
+            return CDI_DETAIL_URL in self.driver.current_url
+        except Exception:
+            return False
+
+    def _extract_license_table(self, licensee: Licensee) -> None:
+        """
+        Parse the license type table on the detail page.
+        Columns: License Type | Original Issue Date | Status | Status Date | Expiration Date
+        """
+        try:
+            tables = self.driver.find_elements(By.CSS_SELECTOR, "table")
+            for tbl in tables:
+                headers = " ".join(
+                    th.text for th in tbl.find_elements(By.TAG_NAME, "th")
+                )
+                if "License Type" not in headers and "Qualification" not in headers:
+                    continue
+                types, exps = [], []
+                for tr in tbl.find_elements(By.CSS_SELECTOR, "tbody tr"):
+                    tds = tr.find_elements(By.TAG_NAME, "td")
+                    if len(tds) >= 5:
+                        lic_type = tds[0].text.strip()
+                        lic_stat = tds[2].text.strip()
+                        exp_date = tds[4].text.strip()
+                        if lic_stat.lower() == "active" and lic_type:
+                            types.append(lic_type)
+                            if exp_date:
+                                exps.append(exp_date)
+                if types:
+                    licensee.license_type = ", ".join(types)
+                if exps:
+                    licensee.expiration_date = exps[0]
+                break
+        except Exception:
+            pass

@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from scraper import CDIScraper, SURNAME_LIST
+from scraper import CDIScraper, SURNAME_LIST, FIRST_NAME_LIST, load_over_limit, save_over_limit
 
 app = FastAPI(title="CDI猎头工具", docs_url=None, redoc_url=None)
 
@@ -26,6 +26,7 @@ app = FastAPI(title="CDI猎头工具", docs_url=None, redoc_url=None)
 class AppStore:
     def __init__(self):
         self.surnames = [s.copy() for s in SURNAME_LIST]
+        self.firstnames = list(FIRST_NAME_LIST)
         self.status = "idle"           # idle | running | waiting_captcha | done | error
         self.progress = {"current": "", "done": 0, "total": 0}
         self.results: list = []        # List[dict]，查询到的执照记录
@@ -33,7 +34,7 @@ class AppStore:
         self.error_message = ""        # 全局错误（浏览器崩溃等）
         # ── 用户可配置项 ──
         self.state_filter = "CA"       # 只保留指定州；"ALL" 表示不过滤
-        self.max_results = 100         # 找到此数量 Active 执照后停止（0 = 不限）
+        self.max_results = 10          # 找到此数量 Active 执照后停止（0 = 不限）
         self._stop_event = threading.Event()
         self._thread = None
 
@@ -78,6 +79,25 @@ async def update_surnames(body: SurnamesBody):
     if store.status == "running":
         raise HTTPException(status_code=400, detail="查询进行中，无法修改姓氏列表")
     store.surnames = body.surnames
+    return {"ok": True}
+
+
+# ── 英文名列表 ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/firstnames")
+async def get_firstnames():
+    return store.firstnames
+
+
+class FirstnamesBody(BaseModel):
+    firstnames: list
+
+
+@app.put("/api/firstnames")
+async def update_firstnames(body: FirstnamesBody):
+    if store.status == "running":
+        raise HTTPException(status_code=400, detail="查询进行中，无法修改名字列表")
+    store.firstnames = [f.strip() for f in body.firstnames if f.strip()]
     return {"ok": True}
 
 
@@ -189,6 +209,27 @@ async def update_settings(body: SettingsBody):
     return {"ok": True}
 
 
+# ── 黑名单管理 ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/over_limit")
+async def get_over_limit():
+    """返回当前黑名单（内置 + 历史发现）"""
+    return {"over_limit": sorted(load_over_limit())}
+
+
+class OverLimitBody(BaseModel):
+    pinyin: str
+
+
+@app.delete("/api/over_limit/{pinyin}")
+async def remove_from_over_limit(pinyin: str):
+    """从黑名单中移除某个拼音（用于手动纠错）"""
+    current = load_over_limit()
+    current.discard(pinyin)
+    save_over_limit(current)
+    return {"ok": True, "over_limit": sorted(current)}
+
+
 # ── CSV导出 ─────────────────────────────────────────────────────────────────────
 
 # 严格按照指定顺序输出列
@@ -199,6 +240,8 @@ CSV_COLUMNS = [
     "license_type",
     "license_number",
     "expiration_date",
+    "business_address",
+    "business_phone",
     "contact_status",
     "notes",
 ]
@@ -221,6 +264,8 @@ async def export_csv():
             "license_type":         r.get("license_type", ""),
             "license_number":       r.get("license_number", ""),
             "expiration_date":      r.get("expiration_date", ""),
+            "business_address":     r.get("business_address", ""),
+            "business_phone":       r.get("business_phone", ""),
             "contact_status":       r.get("contact_status", ""),
             "notes":                r.get("notes", ""),
         })

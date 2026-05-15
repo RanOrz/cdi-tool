@@ -320,20 +320,20 @@ tr:hover td { background: #fafafa; }
   <!-- ── 第1步：姓氏配置 ── -->
   <div class="card" id="card-surnames">
     <div class="card-head">
-      <h2>📋 第1步：确认查询姓氏</h2>
+      <h2>📋 第1步：确认 CDI Last Name 搜索词</h2>
       <button class="btn btn-primary" id="btn-start" onclick="startSearch()">开始查询 →</button>
     </div>
     <div class="card-body" id="surnames-body">
       <p style="font-size:13px;color:#6b7280;margin-bottom:12px">
-        以下为预设的30个华人常见姓氏。点击 ✕ 可删除不需要的，也可在下方添加新姓氏。
+        以下为预设的CDI Last Name 搜索词（华人常见姓氏拼音）。点击 ✕ 可删除，也可在下方添加新词。
       </p>
       <div class="tag-area" id="tag-area"></div>
       <div class="add-row">
-        <input id="add-zh"  type="text" placeholder="中文姓氏（如：蔡）" maxlength="4" style="max-width:160px"/>
-        <input id="add-pin" type="text" placeholder="拼音变体，逗号分隔（如：Cai,Tsai）" />
+        <input id="add-pin" type="text" placeholder="CDI Last Name 搜索词，逗号分隔（如：Cai,Tsai）" />
+        <input id="add-zh"  type="text" placeholder="备注（可选，如：蔡）" maxlength="8" style="max-width:160px"/>
         <button onclick="addSurname()">+ 添加</button>
       </div>
-      <p class="add-hint">拼音变体决定CDI实际搜索词，多个用逗号分隔（不分大小写）</p>
+      <p class="add-hint">搜索词直接填入 CDI 的 Last Name 字段，多个变体用逗号分隔；备注仅供自己识别，不影响查询</p>
 
       <div style="display:flex;gap:24px;margin-top:20px;padding-top:16px;border-top:1px solid #f3f4f6;flex-wrap:wrap">
         <!-- 州过滤 -->
@@ -352,20 +352,43 @@ tr:hover td { background: #fafafa; }
         <!-- 结果上限 -->
         <div>
           <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:8px">
-            结果上限：找到 <strong id="max-label">100</strong> 条 Active 执照后停止
+            结果上限：找到 <strong id="max-label">10</strong> 条 Active 执照后停止
+            <span style="font-weight:400;color:#9ca3af">（拖到 0 = 不限）</span>
           </div>
           <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:12px;color:#9ca3af">50</span>
-            <input type="range" id="max-slider" min="50" max="500" step="10" value="100"
+            <span style="font-size:12px;color:#9ca3af">0</span>
+            <input type="range" id="max-slider" min="0" max="30" step="1" value="10"
               style="width:180px;cursor:pointer"
-              oninput="document.getElementById('max-label').textContent=this.value"
+              oninput="updateMaxLabel(this.value)"
               onchange="saveSettings()">
-            <span style="font-size:12px;color:#9ca3af">500</span>
-            <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#6b7280;cursor:pointer">
-              <input type="checkbox" id="no-limit" onchange="toggleNoLimit()"> 不限
-            </label>
+            <span style="font-size:12px;color:#9ca3af">30</span>
           </div>
         </div>
+      </div>
+
+      <!-- 英文名列表 -->
+      <details style="margin-top:16px;padding-top:16px;border-top:1px solid #f3f4f6">
+        <summary style="font-size:12px;font-weight:600;color:#6b7280;cursor:pointer;user-select:none">
+          👤 英文名列表（First Name）— 与每个姓氏交叉搜索
+          <span style="font-weight:400;color:#9ca3af" id="fn-count-label"></span>
+        </summary>
+        <div style="margin-top:10px">
+          <textarea id="fn-textarea" rows="5"
+            style="width:100%;padding:8px 10px;font-size:12px;border:1.5px solid #e5e7eb;border-radius:7px;outline:none;resize:vertical;line-height:1.7;font-family:inherit"
+            placeholder="每行一个名字，或用逗号分隔..."
+            onblur="saveFirstnames()"
+          ></textarea>
+          <p style="font-size:11px;color:#9ca3af;margin-top:4px">修改后点击其他地方即可自动保存。查询数 = 姓氏变体数 × 名字数。</p>
+        </div>
+      </details>
+
+      <!-- 500条黑名单 -->
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid #f3f4f6">
+        <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:8px">
+          🚫 CDI 500条上限黑名单
+          <span style="font-weight:400;color:#9ca3af">（查询时自动跳过；新发现的会自动加入并保存）</span>
+        </div>
+        <div id="over-limit-tags" style="display:flex;flex-wrap:wrap;gap:6px;min-height:28px"></div>
       </div>
     </div>
   </div>
@@ -374,7 +397,10 @@ tr:hover td { background: #fafafa; }
   <div class="card hidden" id="card-progress">
     <div class="card-head">
       <h2>⚡ 第2步：CDI查询进行中</h2>
-      <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopSearch()">停止查询</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" id="btn-back" onclick="backToConfig()" disabled>← 修改查询列表</button>
+        <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopSearch()">停止查询</button>
+      </div>
     </div>
     <div class="card-body">
       <div class="progress-wrap">
@@ -420,6 +446,8 @@ tr:hover td { background: #fafafa; }
             <th>到期日</th>
             <th>城市</th>
             <th>状态</th>
+            <th>营业地址</th>
+            <th>营业电话</th>
             <th>LinkedIn 搜索</th>
             <th>LinkedIn URL（粘贴到这里）</th>
           </tr>
@@ -443,12 +471,14 @@ let sseSource = null;
 // ── 初始化 ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadSurnames();
+  loadFirstnames();
   loadSettings();
+  loadOverLimit();
 
-  document.getElementById('add-zh').addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('add-pin').focus();
-  });
   document.getElementById('add-pin').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('add-zh').focus();
+  });
+  document.getElementById('add-zh').addEventListener('keydown', e => {
     if (e.key === 'Enter') addSurname();
   });
 
@@ -478,9 +508,10 @@ function renderTags() {
   surnames.forEach((s, i) => {
     const div = document.createElement('div');
     div.className = 'tag';
+    const note = s.zh ? `<span style="opacity:.5;font-size:11px;margin-left:3px">(${s.zh})</span>` : '';
     div.innerHTML =
-      `<span>${s.zh}</span><span style="opacity:.6;font-size:11px">${s.variants.join('/')}</span>` +
-      `<button class="tag-del" onclick="removeSurname(${i})" title="删除此姓氏">✕</button>`;
+      `<span style="font-weight:600">${s.variants.join('/')}</span>${note}` +
+      `<button class="tag-del" onclick="removeSurname(${i})" title="删除">✕</button>`;
     area.appendChild(div);
   });
 }
@@ -492,19 +523,18 @@ function removeSurname(i) {
 }
 
 function addSurname() {
-  const zh  = document.getElementById('add-zh').value.trim();
   const pin = document.getElementById('add-pin').value.trim();
-  if (!zh)  { alert('请填写中文姓氏'); return; }
-  if (!pin) { alert('请填写至少一个拼音变体（例如：Cai）'); return; }
+  const zh  = document.getElementById('add-zh').value.trim();
+  if (!pin) { alert('请填写 CDI Last Name 搜索词（例如：Cai）'); return; }
 
   const variants = pin.split(',').map(v => v.trim()).filter(Boolean)
                       .map(v => v.charAt(0).toUpperCase() + v.slice(1).toLowerCase());
   surnames.push({ zh, variants });
   renderTags();
   saveSurnames();
-  document.getElementById('add-zh').value  = '';
   document.getElementById('add-pin').value = '';
-  document.getElementById('add-zh').focus();
+  document.getElementById('add-zh').value  = '';
+  document.getElementById('add-pin').focus();
 }
 
 async function saveSurnames() {
@@ -515,40 +545,86 @@ async function saveSurnames() {
   });
 }
 
+// ── 英文名列表 ─────────────────────────────────────────────────────────────────
+async function loadFirstnames() {
+  try {
+    const res = await fetch('/api/firstnames');
+    const list = await res.json();
+    document.getElementById('fn-textarea').value = list.join(', ');
+    document.getElementById('fn-count-label').textContent = `（${list.length} 个）`;
+  } catch {}
+}
+
+async function saveFirstnames() {
+  const raw = document.getElementById('fn-textarea').value;
+  const list = raw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+  document.getElementById('fn-count-label').textContent = `（${list.length} 个）`;
+  await fetch('/api/firstnames', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ firstnames: list }),
+  });
+}
+
+// ── 黑名单 ─────────────────────────────────────────────────────────────────────
+async function loadOverLimit() {
+  try {
+    const res = await fetch('/api/over_limit');
+    const data = await res.json();
+    renderOverLimit(data.over_limit);
+  } catch {}
+}
+
+function renderOverLimit(list) {
+  const container = document.getElementById('over-limit-tags');
+  container.innerHTML = '';
+  if (!list || list.length === 0) {
+    container.innerHTML = '<span style="font-size:12px;color:#9ca3af">暂无</span>';
+    return;
+  }
+  list.forEach(pinyin => {
+    const tag = document.createElement('span');
+    tag.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#fef2f2;border:1px solid #fecaca;border-radius:100px;padding:3px 10px;font-size:12px;color:#b91c1c';
+    tag.innerHTML = `${escHtml(pinyin)}<button onclick="removeOverLimit('${escAttr(pinyin)}')" title="从黑名单移除" style="background:none;border:none;color:#fca5a5;cursor:pointer;font-size:12px;padding:0 0 0 2px">✕</button>`;
+    container.appendChild(tag);
+  });
+}
+
+async function removeOverLimit(pinyin) {
+  if (!confirm(`确认将 "${pinyin}" 从黑名单中移除？\n（下次查询将重新尝试，若仍超500条会自动重新加入）`)) return;
+  try {
+    const res = await fetch(`/api/over_limit/${encodeURIComponent(pinyin)}`, { method: 'DELETE' });
+    const data = await res.json();
+    renderOverLimit(data.over_limit);
+  } catch {
+    alert('操作失败，请重试');
+  }
+}
+
 // ── 设置 ───────────────────────────────────────────────────────────────────────
+function updateMaxLabel(val) {
+  document.getElementById('max-label').textContent = val == 0 ? '不限' : val;
+}
+
 async function loadSettings() {
   try {
     const res = await fetch('/api/settings');
     const s = await res.json();
     document.querySelector(`input[name="stateFilter"][value="${s.state_filter}"]`).checked = true;
-    if (s.max_results === 0) {
-      document.getElementById('no-limit').checked = true;
-      document.getElementById('max-slider').disabled = true;
-      document.getElementById('max-label').textContent = '不限';
-    } else {
-      document.getElementById('max-slider').value = s.max_results;
-      document.getElementById('max-label').textContent = s.max_results;
-    }
+    const v = s.max_results === 0 ? 0 : Math.min(30, s.max_results);
+    document.getElementById('max-slider').value = v;
+    updateMaxLabel(v);
   } catch {}
 }
 
 async function saveSettings() {
   const stateFilter = document.querySelector('input[name="stateFilter"]:checked')?.value || 'CA';
-  const noLimit = document.getElementById('no-limit').checked;
-  const maxResults = noLimit ? 0 : parseInt(document.getElementById('max-slider').value);
+  const maxResults = parseInt(document.getElementById('max-slider').value);
   await fetch('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ state_filter: stateFilter, max_results: maxResults }),
   });
-}
-
-function toggleNoLimit() {
-  const noLimit = document.getElementById('no-limit').checked;
-  const slider = document.getElementById('max-slider');
-  slider.disabled = noLimit;
-  document.getElementById('max-label').textContent = noLimit ? '不限' : slider.value;
-  saveSettings();
 }
 
 // ── 查询控制 ────────────────────────────────────────────────────────────────────
@@ -592,7 +668,14 @@ async function stopSearch() {
   await fetch('/api/search/stop', { method: 'POST' });
   if (sseSource) { sseSource.close(); sseSource = null; }
   document.getElementById('btn-stop').disabled = true;
+  document.getElementById('btn-back').disabled = false;
   document.getElementById('progress-label').textContent = '已停止';
+}
+
+function backToConfig() {
+  document.getElementById('surnames-body').style.display = '';
+  document.getElementById('card-progress').classList.add('hidden');
+  setStep(1);
 }
 
 // ── SSE进度监听 ─────────────────────────────────────────────────────────────────
@@ -665,8 +748,10 @@ function updateProgressUI(data) {
 async function onSearchEnd(data) {
   document.getElementById('btn-start').disabled = false;
   document.getElementById('btn-stop').disabled = true;
+  document.getElementById('btn-back').disabled = false;
   setStepDone(2);
   await refreshResults();
+  await loadOverLimit();
   if (renderedIds.size > 0) setStep(3);
 }
 
@@ -707,11 +792,15 @@ async function refreshResults() {
       <td>${escHtml(r.expiration_date)}</td>
       <td>${escHtml(r.city)}</td>
       <td>${statusBadge}</td>
+      <td style="font-size:12px;max-width:200px;white-space:pre-wrap">${escHtml(r.business_address || '—')}</td>
+      <td style="font-size:12px;white-space:nowrap">${escHtml(r.business_phone || '—')}</td>
       <td>
-        <button class="btn btn-linkedin btn-sm"
-          onclick="openLinkedIn(${JSON.stringify(r.first_name)}, ${JSON.stringify(r.last_name)})">
+        <a class="btn btn-linkedin btn-sm"
+          href="https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(r.first_name + ' ' + r.last_name + ' insurance California')}"
+          target="_blank" rel="noopener"
+          onclick="this.style.background='#bfdbfe';this.textContent='✓ 已打开';setTimeout(()=>{this.style.background='';this.textContent='🔍 搜索'},2000)">
           🔍 搜索
-        </button>
+        </a>
       </td>
       <td>
         <input
@@ -729,10 +818,6 @@ async function refreshResults() {
   });
 }
 
-function openLinkedIn(firstName, lastName) {
-  const q = encodeURIComponent(firstName) + '+' + encodeURIComponent(lastName) + '+insurance+California';
-  window.open('https://www.linkedin.com/search/results/people/?keywords=' + q, '_blank');
-}
 
 async function saveLinkedIn(id, el) {
   const url = el.value.trim();
