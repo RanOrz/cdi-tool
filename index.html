@@ -278,6 +278,40 @@ tr:hover td { background: #fafafa; }
 
 /* ── 页脚 ── */
 .footer { text-align: center; padding: 28px 0 16px; font-size: 12px; color: #d1d5db; }
+
+/* ── 已有数据提示条 ── */
+.existing-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+  padding: 10px 14px; margin-bottom: 16px; font-size: 13px; color: #1e40af;
+}
+.existing-bar strong { color: #1a56db; }
+
+/* ── 查询日志 ── */
+.qlog-wrap { margin-top: 18px; border-top: 1px solid #e5e7eb; padding-top: 14px; }
+.qlog-wrap summary {
+  font-size: 12px; font-weight: 600; color: #6b7280; cursor: pointer;
+  user-select: none; list-style: none; display: flex; align-items: center; gap: 6px;
+}
+.qlog-wrap summary::before { content: '▶'; font-size: 10px; transition: transform .2s; }
+.qlog-wrap[open] summary::before { transform: rotate(90deg); }
+.qlog-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+.qlog-table th {
+  background: #f9fafb; padding: 6px 10px; text-align: left;
+  font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;
+}
+.qlog-table td { padding: 5px 10px; border-bottom: 1px solid #f3f4f6; color: #374151; }
+.qlog-table tr:last-child td { border-bottom: none; }
+.qlog-table tr:hover td { background: #f9fafb; }
+.qlog-sub td:first-child { padding-left: 24px; color: #9ca3af; }
+.qbadge {
+  display: inline-block; padding: 1px 7px; border-radius: 100px;
+  font-size: 10px; font-weight: 700;
+}
+.qbadge-ok       { background: #d1fae5; color: #065f46; }
+.qbadge-over     { background: #fef3c7; color: #92400e; }
+.qbadge-error    { background: #fee2e2; color: #991b1b; }
+.qbadge-skipped  { background: #f3f4f6; color: #9ca3af; }
 </style>
 </head>
 <body>
@@ -324,6 +358,17 @@ tr:hover td { background: #fafafa; }
       <button class="btn btn-primary" id="btn-start" onclick="startSearch()">开始查询 →</button>
     </div>
     <div class="card-body" id="surnames-body">
+
+      <!-- 已有数据提示条（有历史数据时显示） -->
+      <div id="existing-data-bar" class="existing-bar hidden">
+        <div>
+          已有 <strong id="existing-result-count">0</strong> 条结果 ·
+          <strong id="existing-query-count">0</strong> 个查询完成 ·
+          新查询将<strong>追加</strong>到现有数据
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="clearAllData()">🗑 清空重来</button>
+      </div>
+
       <p style="font-size:13px;color:#6b7280;margin-bottom:12px">
         以下为预设的CDI Last Name 搜索词（华人常见姓氏拼音）。点击 ✕ 可删除，也可在下方添加新词。
       </p>
@@ -423,6 +468,21 @@ tr:hover td { background: #fafafa; }
       </div>
       <div class="err-box hidden" id="err-box"></div>
       <div class="global-err hidden" id="global-err"></div>
+
+      <details class="qlog-wrap" id="qlog-details">
+        <summary>查询明细 <span id="qlog-count" style="color:#1a56db;font-weight:700"></span></summary>
+        <table class="qlog-table">
+          <thead>
+            <tr>
+              <th>姓氏</th>
+              <th>搜索词</th>
+              <th>找到执照</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="qlog-tbody"></tbody>
+        </table>
+      </details>
     </div>
   </div>
 
@@ -467,6 +527,7 @@ let surnames = [];
 let renderedIds = new Set();  // 已渲染的记录id，避免重复追加行
 let linkedCount = 0;
 let sseSource = null;
+let qlogTimer = null;
 
 // ── 初始化 ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -474,6 +535,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadFirstnames();
   loadSettings();
   loadOverLimit();
+  loadExistingDataInfo();
 
   document.getElementById('add-pin').addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('add-zh').focus();
@@ -490,6 +552,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// ── 已有数据状态 ─────────────────────────────────────────────────────────────────
+async function loadExistingDataInfo() {
+  try {
+    const [statusRes, logRes] = await Promise.all([
+      fetch('/api/status'),
+      fetch('/api/query_log'),
+    ]);
+    const status = await statusRes.json();
+    const log    = await logRes.json();
+    updateExistingBar(status.result_count, log.length);
+  } catch {}
+}
+
+function updateExistingBar(resultCount, queryCount) {
+  const bar = document.getElementById('existing-data-bar');
+  if (resultCount > 0 || queryCount > 0) {
+    document.getElementById('existing-result-count').textContent = resultCount;
+    document.getElementById('existing-query-count').textContent  = queryCount;
+    bar.classList.remove('hidden');
+  } else {
+    bar.classList.add('hidden');
+  }
+}
+
+async function clearAllData() {
+  if (!confirm(`确认清空所有已有结果和查询日志吗？此操作不可撤销。`)) return;
+  try {
+    await fetch('/api/results', { method: 'DELETE' });
+    updateExistingBar(0, 0);
+    // 同时清空前端已渲染的结果表格
+    renderedIds.clear();
+    document.getElementById('tbody').innerHTML = '';
+    document.getElementById('cnt-total').textContent = '0';
+    document.getElementById('cnt-linked').textContent = '0';
+    document.getElementById('card-results').classList.add('hidden');
+    document.getElementById('qlog-tbody').innerHTML = '';
+    document.getElementById('qlog-count').textContent = '';
+  } catch {
+    alert('清空失败，请重试');
+  }
+}
 
 // ── 姓氏管理 ────────────────────────────────────────────────────────────────────
 async function loadSurnames() {
@@ -662,6 +766,7 @@ async function startSearch() {
   setStep(2);
 
   startSSE();
+  startQLogPolling();
 }
 
 async function stopSearch() {
@@ -745,13 +850,61 @@ function updateProgressUI(data) {
   }
 }
 
+// ── 查询日志轮询 ─────────────────────────────────────────────────────────────────
+function startQLogPolling() {
+  if (qlogTimer) clearInterval(qlogTimer);
+  qlogTimer = setInterval(async () => {
+    try {
+      const res = await fetch('/api/query_log');
+      const log = await res.json();
+      renderQueryLog(log);
+    } catch {}
+  }, 2000);
+}
+
+function renderQueryLog(log) {
+  const tbody = document.getElementById('qlog-tbody');
+  const countEl = document.getElementById('qlog-count');
+  if (!log.length) return;
+
+  countEl.textContent = `（${log.length} 条）`;
+
+  const statusMap = {
+    ok:       ['ok',      '完成'],
+    over_limit:['over',   '超500条→展开'],
+    error:    ['error',   '失败'],
+    skipped:  ['skipped', '跳过'],
+  };
+
+  tbody.innerHTML = log.map(r => {
+    const [cls, text] = statusMap[r.status] || ['skipped', r.status];
+    const isSub = r.prefix !== '';
+    return `<tr class="${isSub ? 'qlog-sub' : ''}">
+      <td>${escHtml(r.zh)}</td>
+      <td>${escHtml(r.pinyin)}${r.prefix ? ' <span style="color:#9ca3af">+ ' + escHtml(r.prefix) + '*</span>' : ''}</td>
+      <td style="font-weight:${r.found > 0 ? '700;color:#1a56db' : '400'}">${r.found > 0 ? r.found : '—'}</td>
+      <td><span class="qbadge qbadge-${cls}">${text}</span></td>
+    </tr>`;
+  }).join('');
+
+  // 自动展开（有内容时）
+  document.getElementById('qlog-details').open = true;
+}
+
 async function onSearchEnd(data) {
   document.getElementById('btn-start').disabled = false;
   document.getElementById('btn-stop').disabled = true;
   document.getElementById('btn-back').disabled = false;
   setStepDone(2);
+  // 最后刷一次日志再停止轮询
+  try {
+    const res = await fetch('/api/query_log');
+    renderQueryLog(await res.json());
+  } catch {}
+  if (qlogTimer) { clearInterval(qlogTimer); qlogTimer = null; }
   await refreshResults();
   await loadOverLimit();
+  await loadExistingDataInfo();
   if (renderedIds.size > 0) setStep(3);
 }
 

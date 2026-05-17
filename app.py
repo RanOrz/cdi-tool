@@ -1,6 +1,6 @@
 """
 CDI猎头工具 — FastAPI后端
-所有数据存储在内存中，进程退出后清空
+结果实时写入 results.jsonl；重启后自动恢复上次数据
 """
 
 import asyncio
@@ -21,7 +21,18 @@ from scraper import CDIScraper, SURNAME_LIST, FIRST_NAME_LIST, load_over_limit, 
 app = FastAPI(title="CDI猎头工具", docs_url=None, redoc_url=None)
 
 
-# ── 内存存储（进程级单例，重启即清空） ──────────────────────────────────────────
+# ── 内存存储（进程级单例，结果和查询日志均持久化到本地文件） ────────────────────
+
+_RESULTS_FILE   = Path(__file__).parent / "results.jsonl"
+_QUERY_LOG_FILE = Path(__file__).parent / "query_log.jsonl"
+
+
+def _load_jsonl(path: Path) -> list:
+    try:
+        return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except Exception:
+        return []
+
 
 class AppStore:
     def __init__(self):
@@ -29,14 +40,45 @@ class AppStore:
         self.firstnames = list(FIRST_NAME_LIST)
         self.status = "idle"           # idle | running | waiting_captcha | done | error
         self.progress = {"current": "", "done": 0, "total": 0}
-        self.results: list = []        # List[dict]，查询到的执照记录
-        self.errors: list = []         # List[str]，单条查询失败的错误信息
-        self.error_message = ""        # 全局错误（浏览器崩溃等）
+        self.results: list = _load_jsonl(_RESULTS_FILE)
+        self.query_log: list = _load_jsonl(_QUERY_LOG_FILE)
+        self.errors: list = []
+        self.error_message = ""
         # ── 用户可配置项 ──
-        self.state_filter = "CA"       # 只保留指定州；"ALL" 表示不过滤
-        self.max_results = 10          # 找到此数量 Active 执照后停止（0 = 不限）
+        self.state_filter = "CA"
+        self.max_results = 10
         self._stop_event = threading.Event()
         self._thread = None
+        self._persist_lock = threading.Lock()
+
+    def persist(self, record: dict) -> None:
+        try:
+            with self._persist_lock:
+                with _RESULTS_FILE.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def log_query(self, zh: str, pinyin: str, prefix: str, found: int, status: str) -> None:
+        label = f"{zh}（{pinyin}{' ' + prefix + '*' if prefix else ''}）"
+        entry = {"zh": zh, "pinyin": pinyin, "prefix": prefix,
+                 "label": label, "found": found, "status": status}
+        self.query_log.append(entry)
+        try:
+            with self._persist_lock:
+                with _QUERY_LOG_FILE.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def clear_results(self) -> None:
+        self.results = []
+        self.query_log = []
+        for f in (_RESULTS_FILE, _QUERY_LOG_FILE):
+            try:
+                f.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 store = AppStore()
@@ -108,9 +150,9 @@ async def start_search():
     if store.status == "running":
         raise HTTPException(status_code=400, detail="查询已在进行中，请等待完成")
 
-    # 重置本次查询状态（保留姓氏配置）
+    # 重置本次查询状态（保留姓氏配置），同时清空持久化文件
+    # 只重置本次运行的临时状态，不清空已有结果和查询日志
     store.status = "running"
-    store.results = []
     store.errors = []
     store.error_message = ""
     store.progress = {"current": "", "done": 0, "total": 0}
@@ -132,6 +174,26 @@ async def stop_search():
     store._stop_event.set()
     # 状态由爬虫线程在退出时设置为done/idle，这里只标记中止意图
     return {"ok": True}
+
+
+# ── 状态快照（供脚本轮询） ────────────────────────────────────────────────────────
+
+@app.get("/api/status")
+async def get_status():
+    return {
+        "status":        store.status,
+        "progress":      store.progress,
+        "result_count":  len(store.results),
+        "error_message": store.error_message,
+        "errors":        store.errors[-10:],
+    }
+
+
+# ── 查询日志 ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/query_log")
+async def get_query_log():
+    return store.query_log
 
 
 # ── SSE进度流 ─────────────────────────────────────────────────────────────────
@@ -173,6 +235,14 @@ async def progress_stream():
 @app.get("/api/results")
 async def get_results():
     return store.results
+
+
+@app.delete("/api/results")
+async def clear_results():
+    if store.status == "running":
+        raise HTTPException(status_code=400, detail="查询进行中，无法清空结果")
+    store.clear_results()
+    return {"ok": True}
 
 
 class LinkedInBody(BaseModel):

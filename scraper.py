@@ -180,7 +180,10 @@ class CDIScraper:
         self._state_filter = state_filter.upper()
         self._max_results = max_results
         all_queries = self._build_query_list(surname_config)
-        seen_numbers: set = set()
+        # 用已有结果的执照号初始化去重集合，避免追加时产生重复记录
+        seen_numbers: set = {r.get("license_number", "") for r in store.results if r.get("license_number")}
+        # max_results 按本次运行新增量计算，不计入之前批次的存量
+        self._run_start = len(store.results)
 
         store.progress = {"current": "正在启动浏览器...", "done": 0, "total": len(all_queries)}
 
@@ -207,43 +210,15 @@ class CDIScraper:
             for i, q in enumerate(all_queries):
                 if stop_event.is_set():
                     break
-                if self._max_results > 0 and len(store.results) >= self._max_results:
+                if self._max_results > 0 and (len(store.results) - self._run_start) >= self._max_results:
                     store.errors.append(f'已达到设定上限 {self._max_results} 条，停止')
                     break
 
                 store.progress["done"] = i
-                label = f"{q['zh']}（{q['pinyin']}）"
-                store.progress["current"] = label
-
-                try:
-                    batch = self._search_one(q["pinyin"], "")
-                    self._collect_batch(batch, store, seen_numbers, label, stop_event)
-
-                except OverLimitError:
-                    # 超500条 → 逐字母 A-Z 搜索，收够为止
-                    store.errors.append(f'🔀 "{q["pinyin"]}" 超500条，展开 A-Z 子查询')
-                    for letter in string.ascii_uppercase:
-                        if stop_event.is_set():
-                            break
-                        if self._max_results > 0 and len(store.results) >= self._max_results:
-                            break
-                        sub_label = f"{q['zh']}（{q['pinyin']} {letter}*）"
-                        store.progress["current"] = sub_label
-                        try:
-                            sub_batch = self._search_one(q["pinyin"], letter)
-                            self._collect_batch(sub_batch, store, seen_numbers, sub_label, stop_event)
-                        except OverLimitError:
-                            store.errors.append(f'⚠️ "{q["pinyin"]} {letter}*" 仍超500条，跳过')
-                        except Exception as e:
-                            store.errors.append(f'查询"{sub_label}"失败：{e}')
-                        if not stop_event.is_set():
-                            time.sleep(1.0)
-
-                except Exception as e:
-                    store.errors.append(f'查询"{label}"失败：{e}')
+                self._search_trie(q["pinyin"], "", store, seen_numbers, q["zh"], stop_event)
 
                 if not stop_event.is_set():
-                    time.sleep(1.0)
+                    stop_event.wait(1.0)
 
             store.progress["done"] = len(all_queries)
             store.status = "done"
@@ -256,12 +231,53 @@ class CDIScraper:
 
     # ── Search ────────────────────────────────────────────────────
 
+    def _search_trie(self, last_name: str, prefix: str, store, seen_numbers: set,
+                     zh: str, stop_event: threading.Event, depth: int = 0) -> None:
+        """DFS trie traversal over first-name prefixes.
+
+        - over 500 → recurse into prefix+'a' … prefix+'z'
+        - ≤500 (including 0) → collect results, return; parent loop advances to next letter
+        - depth > 4 → give up on this branch (safety cap)
+        """
+        if stop_event.is_set():
+            return
+        if self._max_results > 0 and (len(store.results) - self._run_start) >= self._max_results:
+            return
+        if depth > 4:
+            store.errors.append(f'⚠️ "{last_name} {prefix}*" 超过最大深度，跳过')
+            return
+
+        label = f"{zh}（{last_name}" + (f" {prefix}*" if prefix else "") + "）"
+        store.progress["current"] = label
+
+        try:
+            batch = self._search_one(last_name, prefix)
+            before = len(store.results)
+            self._collect_batch(batch, store, seen_numbers, label, stop_event)
+            store.log_query(zh, last_name, prefix, len(store.results) - before, "ok")
+
+        except OverLimitError:
+            store.log_query(zh, last_name, prefix, 0, "over_limit")
+            for letter in string.ascii_lowercase:
+                if stop_event.is_set():
+                    break
+                if self._max_results > 0 and (len(store.results) - self._run_start) >= self._max_results:
+                    break
+                self._search_trie(last_name, prefix + letter, store, seen_numbers,
+                                  zh, stop_event, depth + 1)
+                if not stop_event.is_set():
+                    stop_event.wait(0.5)
+
+        except Exception as e:
+            store.errors.append(f'查询"{label}"失败：{e}')
+            store.log_query(zh, last_name, prefix, 0, "error")
+
     def _collect_batch(self, batch, store, seen_numbers, label, stop_event):
         """Process a list of Licensee records into store.results."""
         for j, r in enumerate(batch):
             if stop_event.is_set():
                 break
-            if self._max_results > 0 and len(store.results) >= self._max_results:
+            if self._max_results > 0 and (len(store.results) - self._run_start) >= self._max_results:
                 break
             if r.license_number in seen_numbers:
                 continue
@@ -269,10 +285,11 @@ class CDIScraper:
             if r._onclick_params:
                 store.progress["current"] = f"{label} 详情 {j + 1}/{len(batch)}"
                 self._fetch_detail_into(r)
-                time.sleep(1.0)
+                stop_event.wait(1.0)
             d = r.__dict__.copy()
             d.pop("_onclick_params", None)
             store.results.append(d)
+            store.persist(d)
 
     def _search_one(self, last_name: str, prefix: str = "") -> list:
         self._submit_search(last_name, prefix)
@@ -347,9 +364,15 @@ class CDIScraper:
             if prefix:
                 fn_el.send_keys(prefix)
 
+        # Grab a reference to an existing row (if any) so we can detect page refresh
+        existing_rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+        stale_ref = existing_rows[0] if existing_rows else None
+
         driver.find_element(By.ID, "btnSearch").click()
-        # 等结果表格或"无结果"提示出现，而不是固定等 3 秒
         try:
+            # Wait for old rows to go stale first — prevents reading previous search's data
+            if stale_ref:
+                WebDriverWait(driver, 10).until(EC.staleness_of(stale_ref))
             WebDriverWait(driver, 15).until(
                 EC.any_of(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr")),
@@ -362,6 +385,8 @@ class CDIScraper:
     def _is_over_limit(self) -> bool:
         try:
             body = self.driver.find_element(By.TAG_NAME, "body").text
+            # Search result pages never contain addresses, so checking both keywords
+            # anywhere in the body is safe and matches CDI's over-limit message.
             return "500" in body and "refine" in body.lower()
         except Exception:
             return False

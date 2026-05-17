@@ -48,21 +48,31 @@
 
 ---
 
-## 待确认事项（需要实际运行验证）
+## 已验证结论（2026-05-16）
 
-1. **SearchIndvId 参数**：params[2] 是否正确？如果运行后发现 business_address 全部为空，
-   可能需要改回 params[1]，或两个 ID 的意义需要进一步探查。
-   
-2. **form1 位于哪些页面**：当前假设 CDI 所有页面都有 form1（模板级组件）。
-   如果某些页面没有，`_post_detail_form()` 会超时并跳过该条记录。
+1. **SearchIndvId 参数**：✅ **params[2] 正确**。
+   实测 License 0F77495（Alan Liang）：params[2]='1098499' 成功拿到地址和电话。
+   params[1]='2807158' 会返回 "Unable to retrieve"。代码保持 [params[2], params[1]] 优先顺序不变。
 
-3. **Cloudflare 重验证**：每次 `driver.get(CDI_SEARCH_URL)` 都会检查 session。
-   目前假设验证过一次后整个 session 内有效。如果后续出现 CAPTCHA，
-   工具会在 `_wait_for_turnstile()` 处暂停等用户手动完成。
+2. **form1 可用性**：✅ CDI 搜索页和详情页都有 form1，模板级组件，全程可用。
 
-4. **First Name 字段 ID**：分段查询时填 First Name 的字段尝试了
-   `SearchFirstName`、`FirstName`、`txtFirstName` 三个 ID，没有实测。
-   如果 A-Z 分段没效果（每段结果还是一样），可能 First Name 字段 ID 不对。
+3. **Cloudflare 重验证**：✅ undetected_chromedriver 自动通过 Turnstile，
+   全程无需手动干预，session 内不重复验证。
+
+4. **First Name 字段 ID**：✅ 实测为 `SearchFirstName`，已是代码里的第一候选，无需修改。
+
+5. **端对端测试结果**：✅ 搜索 Liang，上限3条，全部获得 business_address 和 business_phone。
+   共找到 179 条候选，按上限停在第3条，结果写入 results.jsonl 正常。
+
+## 代码改动记录（2026-05-16）
+
+- `scraper.py`：`_is_over_limit()` 恢复宽松判断（搜索页无地址，误判风险可忽略）
+- `scraper.py`：`time.sleep(1.0)` → `stop_event.wait(1.0)`，停止按钮立即响应
+- `scraper.py`：`_collect_batch()` 每条入库后调用 `store.persist(d)` 写文件
+- `app.py`：`AppStore` 新增 `persist()`、`clear_results()` 方法，启动时自动恢复 results.jsonl
+- `app.py`：新增 `DELETE /api/results` 接口（清空结果和文件）
+- `app.py`：新增 `GET /api/status` 接口（供脚本轮询，含 errors 字段）
+- `.gitignore`：新增 `results.jsonl`、`over_limit.json`
 
 ---
 
